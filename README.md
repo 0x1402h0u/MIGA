@@ -1,6 +1,6 @@
 # miga
 
-A new Flutter project.
+This is a simulated card drawing program modeled after "Inscryption", used to draw cards when playing card games with your opponents.
 
 ## Getting Started
 
