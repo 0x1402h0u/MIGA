@@ -12,6 +12,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'log_collector.dart';
+import '../utils/m3e_toast.dart';
 
 enum _LogAction { save, send }
 
@@ -47,24 +48,27 @@ Future<void> showLogDialog(BuildContext context) async {
     builder: (_) => const Center(child: M3ECircularProgressIndicator()),
   );
 
-  final messenger = ScaffoldMessenger.of(context);
+  // 提示在关闭进度框之后再弹出：底部弹层与进度框在同一个 Navigator 上，
+  // 若先弹提示，随后的 pop 会把弹层关掉而进度框留在界面上。
+  String? toast;
   try {
     switch (action) {
       case _LogAction.save:
         final path = await _pickSavePath();
         if (path == null) return; // 用户取消保存位置
         final zip = await LogCollector.instance.exportZip(destPath: path);
-        messenger.showSnackBar(
-          SnackBar(content: Text('日志已保存到 ${zip.path}')),
-        );
+        toast = '日志已保存到 ${zip.path}';
       case _LogAction.send:
         final zip = await LogCollector.instance.exportZip();
         await _shareZip(zip);
     }
   } catch (e) {
-    messenger.showSnackBar(SnackBar(content: Text('操作失败：$e')));
+    toast = '操作失败：$e';
   } finally {
     if (context.mounted) Navigator.of(context).pop(); // 关闭进度框
+  }
+  if (toast != null && context.mounted) {
+    showMigaToast(context, toast);
   }
 }
 

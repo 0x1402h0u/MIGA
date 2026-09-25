@@ -46,7 +46,7 @@ class CardFace extends StatelessWidget {
                 child: Text(
                   card.costText ?? '${card.cost}',
                   style: TextStyle(
-                    fontSize: 9 * s,
+                    fontSize: 10 * s,
                     fontWeight: FontWeight.w700,
                     color: textColor,
                   ),
@@ -65,7 +65,7 @@ class CardFace extends StatelessWidget {
               child: Text(
                 card.name,
                 style: TextStyle(
-                  fontSize: 11 * s,
+                  fontSize: 12.5 * s,
                   fontWeight: FontWeight.w700,
                   color: textColor,
                 ),
@@ -87,7 +87,7 @@ class CardFace extends StatelessWidget {
             child: Text(
               card.skills.join('、'),
               style: TextStyle(
-                fontSize: 7.5 * s,
+                fontSize: 9.5 * s,
                 color: textColor.withValues(alpha: 0.8),
                 height: 1.25,
               ),
@@ -205,7 +205,7 @@ class _StatBadge extends StatelessWidget {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(icon, size: 10 * scale, color: Colors.black54),
+          Icon(icon, size: 11.5 * scale, color: Colors.black54),
           SizedBox(width: 2 * scale),
           Flexible(
             child: FittedBox(
@@ -213,7 +213,7 @@ class _StatBadge extends StatelessWidget {
               child: Text(
                 value,
                 style: TextStyle(
-                  fontSize: 10 * scale,
+                  fontSize: 11.5 * scale,
                   fontWeight: FontWeight.w700,
                   color: Colors.black87,
                 ),

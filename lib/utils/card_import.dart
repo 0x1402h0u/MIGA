@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import '../data/card_pool.dart';
 import '../data/local_store.dart';
+import '../utils/m3e_toast.dart';
 
 /// 通过文件选择器导入 JSON 牌库到全局 CardPool，并持久化到本地。
 Future<void> importCardLibrary(BuildContext context) async {
@@ -19,15 +20,11 @@ Future<void> importCardLibrary(BuildContext context) async {
     final count = CardPool.instance.importJson(content);
     await LocalStore.instance.saveLibrary(CardPool.instance.cards);
     if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('成功导入 $count 张卡牌')),
-      );
+      showMigaToast(context, '成功导入 $count 张卡牌');
     }
   } catch (e) {
     if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('导入失败：$e')),
-      );
+      showMigaToast(context, '导入失败：$e');
     }
   }
 }

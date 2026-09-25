@@ -1,13 +1,22 @@
 // M3E Migration 记录：按钮（M3ETextButton 等）已迁移；
 // 规则 3 未覆盖组件 AlertDialog 暂用官方 material 最新组件，
-// 待官方 M3E 包覆盖后二次迁移。底部滑轨为主按钮属自定义交互，非标准 FAB。
+// 待官方 M3E 包覆盖后二次迁移。底部滑轨为主按钮属自定义交互，非标准 FAB：
+// 默认收起，长按满 1 秒才展开轨道并允许横向拖动（见 _buildDrawButton）。
 import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart' show LongPressGestureRecognizer;
 import 'package:flutter/physics.dart';
 import 'package:flutter/services.dart';
+import 'package:liquid_glass_widgets/liquid_glass_widgets.dart'
+    show
+        AdaptiveGlass,
+        GlassQuality,
+        GlassTheme,
+        LiquidGlassSettings,
+        LiquidRoundedRectangle;
 import 'package:m3e_core/m3e_core.dart' hide Cubic;
 
 import '../data/card_pool.dart';
@@ -52,17 +61,52 @@ const _confirmRed = Color(0xFFE53935);
 
 const _deckCardWidth = 160.0;
 const _deckCardHeight = 224.0;
-const _handCardWidth = 120.0;
-const _handCardHeight = 168.0;
+const _handCardWidth = 155.0;
+const _handCardHeight = 217.0;
 
-const _deckCenterY = -160.0;
-const _handCenterY = 120.0;
-const _cardSpacing = 90.0;
+const _deckCenterY = -320.0;
+const _handCenterY = 20.0;
+const _cardSpacing = 110.0;
 
 const _dragThreshold = 100.0;
 const _dragMax = 138.0;
 const _trackWidth = 336.0;
 const _trackHeight = 72.0;
+
+/// 主按钮直径（固定不变：取消原先拖动时的胶囊拉伸后，按钮恒为这个尺寸）
+const _drawButtonSize = 56.0;
+
+/// 两个「剩余卡牌数量」环（M3ECircularWavyProgressIndicator）的几何参数。
+/// 尺寸不只是「包住内部元素」：组件的波峰画在方框半径之外（振幅 1.5×线宽），
+/// 环的内侧波谷又会往里探，所以只按包裹关系取尺寸时波谷正好压在内部元素上，
+/// 看起来「粘连」。实测（DPR 2.625）主环 68 时环内缘到 56 按钮外缘最窄 -1.1dp
+/// （波谷已经吃进按钮），换堆环 48 到 40 图标圆最窄 -0.2dp；
+/// 现在主环 84 → 最窄 +7.0dp、换堆环 60 → 最窄 +5.0dp（再大就会挤到
+/// 「向右滑动至红色图标以完成重置」确认提示文字）。线宽/波段/波速沿用原值，
+/// 放大后 4dp 线宽在截图里仍然清晰，故未改。
+const _drawRingSize = 84.0;
+const _swapRingSize = 60.0;
+const _ringStrokeWidth = 4.0;
+const _ringGapSize = 4.0;
+const _ringWavelength = 20.0;
+const _ringWaveSpeed = 20.0;
+
+/// 环的波峰相对自身方框的外溢量：组件把振幅取成 1.5×线宽（实测渲染约为其一半，
+/// 这里按组件上限取值留余量）。底部操作区按它给上下留白，避免波峰被裁切。
+const _ringPeakOverflow = _ringStrokeWidth * 1.5;
+
+/// 底部操作区（主按钮 + 进度环 + 左右轨道钮）高度：
+/// 主环直径 + 上下各一圈波峰外溢，环放大后波峰仍完整落在容器内。
+const _bottomBarHeight = _drawRingSize + 2 * _ringPeakOverflow;
+
+/// 主按钮外层 Stack 宽度：按钮静止时居中，左右各留 _dragMax 供其平移，
+/// 再各留 6dp 让左右两个操作钮能贴在这层 Stack 的两端（数值同原实现 68+extraW 的上限）
+const _drawButtonOuterW = _drawButtonSize + 2 * _dragMax + 12;
+
+/// 展开轨道并允许拖动所需的长按时长。
+/// 需求是「长按满 1 秒」；GestureDetector 的 onLongPress* 走的是框架默认
+/// kLongPressTimeout(500ms)，不够，所以下面用 RawGestureDetector + 显式 duration 覆盖。
+const _railHoldDuration = Duration(seconds: 1);
 
 const _scaleDown =
     (_handCardWidth / _deckCardWidth + _handCardHeight / _deckCardHeight) / 2;
@@ -139,6 +183,11 @@ class DrawScreenState extends State<DrawScreen>
   String? _dragTarget;
   bool _hasSnapped = false;
   bool _confirmResetVisible = false;
+
+  /// 轨道是否处于「长按展开」状态：只有它为 true 时才露左右操作钮、才接受横向拖动。
+  /// 两条写入路径（长按满 1 秒展开、松手收起）都紧跟着 setState 重建，
+  /// 所以普通字段就够，不需要 ValueNotifier。
+  bool _railExpanded = false;
 
   late final AnimationController _handScrollAnim;
   late final AnimationController _deckSwapProgress;
@@ -817,46 +866,53 @@ class DrawScreenState extends State<DrawScreen>
                         final ok =
                             n >= 15 && n <= 20;
                         if (ok) return const SizedBox.shrink();
-                        return BackdropFilter(
-                          filter: ui.ImageFilter.blur(
-                            sigmaX: 4,
-                            sigmaY: 4,
-                          ),
-                          child: Container(
-                            color: Colors.black.withValues(alpha: 0.55),
-                            alignment: Alignment.center,
-                            child: Padding(
-                              padding: const EdgeInsets.all(24),
-                              child: M3ECard(
-                                index: 0,
-                                position: M3ECardPosition.single,
-                                outerRadius: 16,
-                                innerRadius: 4,
-                                gap: 0,
-                                padding: EdgeInsets.zero,
+                        // 四边留白 + 圆角：压暗层做成悬浮卡片，不再贴边铺满
+                        return Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(28),
+                            child: BackdropFilter(
+                              filter: ui.ImageFilter.blur(
+                                sigmaX: 4,
+                                sigmaY: 4,
+                              ),
+                              child: Container(
+                                color: Colors.black.withValues(alpha: 0.55),
+                                alignment: Alignment.center,
                                 child: Padding(
-                                  padding: const EdgeInsets.all(20),
-                                  child: Column(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      const Icon(
-                                        Icons.warning_amber_rounded,
-                                        size: 40,
-                                        color: Color(0xFFB00020),
+                                  padding: const EdgeInsets.all(24),
+                                  child: M3ECard(
+                                    index: 0,
+                                    position: M3ECardPosition.single,
+                                    outerRadius: 16,
+                                    innerRadius: 4,
+                                    gap: 0,
+                                    padding: EdgeInsets.zero,
+                                    child: Padding(
+                                      padding: const EdgeInsets.all(20),
+                                      child: Column(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          const Icon(
+                                            Icons.warning_amber_rounded,
+                                            size: 40,
+                                            color: Color(0xFFB00020),
+                                          ),
+                                          const SizedBox(height: 12),
+                                          Text(
+                                            '牌组合规数量为 15~20 张',
+                                            style: theme.textTheme.titleMedium,
+                                            textAlign: TextAlign.center,
+                                          ),
+                                          const SizedBox(height: 6),
+                                          Text(
+                                            '当前为 $n 张，请先在「配装」页调整牌组。',
+                                            style: theme.textTheme.bodyMedium,
+                                            textAlign: TextAlign.center,
+                                          ),
+                                        ],
                                       ),
-                                      const SizedBox(height: 12),
-                                      Text(
-                                        '牌组合规数量为 15~20 张',
-                                        style: theme.textTheme.titleMedium,
-                                        textAlign: TextAlign.center,
-                                      ),
-                                      const SizedBox(height: 6),
-                                      Text(
-                                        '当前为 $n 张，请先在「配装」页调整牌组。',
-                                        style: theme.textTheme.bodyMedium,
-                                        textAlign: TextAlign.center,
-                                      ),
-                                    ],
+                                    ),
                                   ),
                                 ),
                               ),
@@ -911,16 +967,32 @@ class DrawScreenState extends State<DrawScreen>
           height: _deckCardHeight,
           child: _buildDeckCards(),
         ),
-        // deck count
+        // deck count：半透明大字叠加在牌堆可见区域（下半部分）
         if (_redDeck.length > 2)
           Positioned(
-            left: 0,
-            right: 0,
-            top: centerY + _deckCenterY + _deckCardHeight / 2 + 20 - 12,
+            left: deckLeft,
+            top: deckTop + _deckCardHeight * 0.62,
+            width: _deckCardWidth,
+            height: _deckCardHeight * 0.45,
             child: Center(
               child: Text(
                 '${_redDeck.length}',
-                style: theme.textTheme.labelLarge,
+                style: TextStyle(
+                  fontSize: 48,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: -2,
+                  foreground: Paint()
+                    ..shader = LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        theme.colorScheme.onSurface.withValues(alpha: 0.20),
+                        theme.colorScheme.onSurface.withValues(alpha: 0.06),
+                      ],
+                    ).createShader(
+                      const Rect.fromLTWH(0, 0, 200, 70),
+                    ),
+                ),
                 textAlign: TextAlign.center,
               ),
             ),
@@ -1112,7 +1184,6 @@ class DrawScreenState extends State<DrawScreen>
   }
 
   Widget _buildBottomButtons(ThemeData theme) {
-    final isResetEnabled = !_isDrawing;
     // 换堆仅在另一牌堆还有牌时可用
     final isSwapEnabled = !_isDrawing &&
         _redDeck.length >= 2 &&
@@ -1123,25 +1194,26 @@ class DrawScreenState extends State<DrawScreen>
         (_isRedFront ? _redStyle : _blueStyle).accentFor(theme.brightness);
 
     return SizedBox(
-      height: 88,
+      height: _bottomBarHeight,
       child: Stack(
         alignment: Alignment.center,
         clipBehavior: Clip.none,
         children: [
-          // 未开局时只显示发牌按钮；首次点击后凹槽从中心向两侧展开、
+          // 未开局时只显示发牌按钮；之后轨道默认仍收起，
+          // 只有长按主按钮满 1 秒（_railExpanded）才从中心向两侧展开、
           // 左右按钮从中心滑出到两端
           IgnorePointer(
             ignoring: _isFirstDraw,
             child: _AnimatedProgress(
-              target: _isFirstDraw ? 0.0 : 1.0,
+              target: _railExpanded ? 1.0 : 0.0,
               builder: (p) => SizedBox(
                 width: _trackWidth,
-                height: 88,
+                height: _bottomBarHeight,
                 child: Stack(
                   alignment: Alignment.center,
                   clipBehavior: Clip.none,
                   children: [
-                    // 凹槽：从中心向两侧水平展开
+                    // 水平滑轨示意线：从中心向两侧展开
                     Center(
                       child: ClipRect(
                         child: Align(
@@ -1150,9 +1222,21 @@ class DrawScreenState extends State<DrawScreen>
                           heightFactor: 1,
                           child: SizedBox(
                             width: _trackWidth,
-                            height: _trackHeight,
-                            child: CustomPaint(
-                              painter: _GroovePainter(theme.colorScheme),
+                            height: 2,
+                            child: DecoratedBox(
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(1),
+                                gradient: LinearGradient(
+                                  colors: [
+                                    theme.colorScheme.outlineVariant
+                                        .withValues(alpha: 0.0),
+                                    theme.colorScheme.outlineVariant
+                                        .withValues(alpha: 0.5),
+                                    theme.colorScheme.outlineVariant
+                                        .withValues(alpha: 0.0),
+                                  ],
+                                ),
+                              ),
                             ),
                           ),
                         ),
@@ -1175,22 +1259,22 @@ class DrawScreenState extends State<DrawScreen>
                         ),
                       ),
                     ),
-                    // 左侧：重置钮，从中心向左滑出
+                    // 左侧：重置钮，随轨道从中心向左滑出（p=轨道展开进度，收起时为 0）
                     Opacity(
                       opacity: p,
                       child: Transform.translate(
                         offset: Offset(_dragMax * (1 - p), 0),
-                        child: Align(
+                        child: const Align(
                           alignment: Alignment.centerLeft,
                           child: Padding(
-                            padding: const EdgeInsets.only(left: 6),
-                            child: _buildResetCap(theme),
+                            padding: EdgeInsets.only(left: 6),
+                            child: _ResetCap(),
                           ),
                         ),
                       ),
                     ),
                     // 右侧：换堆钮（环形显示另一牌堆剩余进度），
-                    // 向左滑触发重置时变红成确认钮，从中心向右滑出
+                    // 向左滑触发重置时变红成确认钮，随轨道从中心向右滑出
                     Opacity(
                       opacity: p,
                       child: Transform.translate(
@@ -1214,41 +1298,17 @@ class DrawScreenState extends State<DrawScreen>
             ),
           ),
           // 中间可在凹槽内左右滑动的拇指按钮
-          _buildDrawButton(
-            theme,
-            isResetEnabled,
-            isSwapEnabled,
-            activeRingColor,
-          ),
+          _buildDrawButton(theme, activeRingColor),
         ],
       ),
     );
   }
 
-  /// 左端钮：重置。重置确认态显示在右端换堆钮上
-  Widget _buildResetCap(ThemeData theme) {
-    return Container(
-      width: 48,
-      height: 48,
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surface,
-        shape: BoxShape.circle,
-      ),
-      alignment: Alignment.center,
-      child: Icon(
-        Icons.refresh,
-        size: 24,
-        color: theme.colorScheme.onSurfaceVariant,
-      ),
-    );
-  }
-
   Widget _buildSwapCap(ThemeData theme, bool enabled, Color progressColor) {
+    final cs = theme.colorScheme;
     final confirming = _confirmResetVisible;
     final isActive = _dragTarget == 'swap' && enabled;
     final scale = confirming || isActive ? 1.15 : 1.0;
-    // 外层 AnimatedBuilder 每帧重建，若用 TweenAnimationBuilder 会每帧重置动画、
-    // 进度永远停在初始值，因此直接按当前剩余比例渲染。
     final progress =
         _blueDeck.isNotEmpty && _blueDeckMax > 0
             ? _blueDeck.length / _blueDeckMax
@@ -1257,61 +1317,76 @@ class DrawScreenState extends State<DrawScreen>
       scale: scale,
       child: _AnimatedProgress(
         target: progress,
-        builder: (v) => _RingBox(
-          size: 48,
-          radius: 20,
-          strokeWidth: 3,
-          progress: confirming ? 1.0 : v,
-          color: confirming ? _confirmRed : progressColor,
-          bgColor: theme.colorScheme.surface,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 150),
-            curve: _fastOutSlowIn,
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              color: confirming
-                  ? _confirmRed
-                  : isActive
-                      ? theme.colorScheme.primaryContainer
-                      : theme.colorScheme.surface,
-              shape: BoxShape.circle,
-              boxShadow: confirming
-                  ? [
-                      BoxShadow(
-                        color: _confirmRed.withValues(alpha: 0.45),
-                        blurRadius: 10,
-                        spreadRadius: 1,
-                      ),
-                    ]
-                  : null,
-            ),
+        builder: (v) => SizedBox(
+          width: _swapRingSize,
+          height: _swapRingSize,
+          child: Stack(
             alignment: Alignment.center,
-            child: AnimatedSwitcher(
-              duration: const Duration(milliseconds: 150),
-              child: Icon(
-                confirming ? Icons.check : Icons.swap_horiz,
-                key: ValueKey<bool>(confirming),
-                size: 22,
-                color: confirming
-                    ? Colors.white
-                    : isActive
-                        ? theme.colorScheme.primary
-                        : theme.colorScheme.onSurfaceVariant,
+            children: [
+              // 另一牌堆的剩余比例环：活动/非活动靠 `color`（本堆 vs 另一堆取色）
+              M3ECircularWavyProgressIndicator(
+                value: confirming ? 1.0 : v,
+                color: confirming ? _confirmRed : progressColor,
+                backgroundColor: cs.surfaceContainerHigh,
+                size: _swapRingSize,
+                strokeWidth: _ringStrokeWidth,
+                trackStrokeWidth: _ringStrokeWidth,
+                gapSize: _ringGapSize,
+                wavelength: _ringWavelength,
+                waveSpeed: _ringWaveSpeed,
               ),
-            ),
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 150),
+                curve: _fastOutSlowIn,
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: confirming
+                      ? _confirmRed
+                      : isActive
+                          ? cs.primaryContainer
+                          : cs.surfaceContainerHigh,
+                  shape: BoxShape.circle,
+                  border: confirming
+                      ? null
+                      : Border.all(
+                          color: cs.outlineVariant.withValues(alpha: 0.5),
+                          width: 1,
+                        ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: confirming
+                          ? _confirmRed.withValues(alpha: 0.45)
+                          : cs.shadow.withValues(alpha: 0.08),
+                      blurRadius: confirming ? 10 : 4,
+                      spreadRadius: confirming ? 1 : 0,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
+                ),
+                alignment: Alignment.center,
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 150),
+                  child: Icon(
+                    confirming ? Icons.check : Icons.swap_horiz,
+                    key: ValueKey<bool>(confirming),
+                    size: 22,
+                    color: confirming
+                        ? Colors.white
+                        : isActive
+                            ? cs.primary
+                            : cs.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
       ),
     );
   }
 
-  Widget _buildDrawButton(
-    ThemeData theme,
-    bool isResetEnabled,
-    bool isSwapEnabled,
-    Color activeRingColor,
-  ) {
+  Widget _buildDrawButton(ThemeData theme, Color activeRingColor) {
     final enabled = !_isDrawing && _redDeck.isNotEmpty;
     final ringAlpha = _isFirstDraw ? 0.0 : 1.0;
     final ringScale = _isDragging ? 0.0 : 1.0;
@@ -1323,10 +1398,42 @@ class DrawScreenState extends State<DrawScreen>
     final activeProgressTarget = _redDeck.isNotEmpty && _redDeckMax > 0
         ? _redDeck.length / _redDeckMax
         : 0.0;
+    // 玻璃表面的前景色：沿用包内玻璃组件在浅色/深色下用的 label 取色
+    // （浅色黑 / 深色白），与液态玻璃底栏的图标、文字同一条色路。
+    // 原来的 `onPrimary`（浅色模式下是白）落在近白的玻璃上只有约 1.2:1，
+    // 不满足 3:1，所以这里按可读性换成 label 色（实测见交付报告）。
+    final glassLabelColor = GlassTheme.brightnessOf(context) == Brightness.dark
+        ? Colors.white
+        : Colors.black;
 
-    return GestureDetector(
-      onTap: () {
-        if (_dragOffset.value == 0) {
+    // 手势分两层，各管一件事：
+    //  1) 单击抽牌：GestureDetector.onTap。TapGestureRecognizer 与长按识别器
+    //     同场竞技，手指早于 1 秒抬起时只有 tap 能赢，所以单击不会被长按吃掉。
+    //  2) 按住滑动：RawGestureDetector + LongPressGestureRecognizer(duration: 1s)。
+    //     默认的 onLongPress* 是 500ms，不够，这里用 FactoryWithHandlers 显式构造，
+    //     时长只作用于这一个识别器，不影响框架默认值。
+    //    onLongPressStart  = 满 1 秒才到，此时展开轨道并置 _isDragging（驱动进度环收起）；
+    //    onLongPressMoveUpdate = 手指随意移动，用 offsetFromOrigin 折算横向拖动量；
+    //    onLongPressEnd / onLongPressCancel = 松手，收起轨道 + 沿用原来的落点判定。
+    return RawGestureDetector(
+      behavior: HitTestBehavior.opaque,
+      gestures: <Type, GestureRecognizerFactory>{
+        LongPressGestureRecognizer:
+            GestureRecognizerFactoryWithHandlers<LongPressGestureRecognizer>(
+          () => LongPressGestureRecognizer(duration: _railHoldDuration),
+          (instance) {
+            instance
+              ..onLongPressStart = _onRailHoldStart
+              ..onLongPressMoveUpdate = _onRailDragUpdate
+              ..onLongPressEnd = _onRailRelease
+              ..onLongPressCancel = _endRailInteraction;
+          },
+        ),
+      },
+      child: GestureDetector(
+        // 只在轨道收起、也没在拖动时抽牌：展开态/拖动中的抬手一律不当作单击
+        onTap: () {
+          if (_railExpanded || _isDragging) return;
           if (_isFirstDraw) {
             unawaited(_drawCards(4));
             _isFirstDraw = false;
@@ -1335,205 +1442,258 @@ class DrawScreenState extends State<DrawScreen>
           } else {
             unawaited(_drawCards(1));
           }
-        }
-      },
-      onPanStart: (_) {
-        if ((_handCards.isEmpty && _isFirstDraw) || _isDrawing) {
-          _isDragging = false;
-          return;
-        }
-        setState(() {
-          _isDragging = true;
-          _hasSnapped = false;
-          _confirmResetVisible = false;
-        });
-      },
-      onPanUpdate: (details) {
-        if ((_handCards.isEmpty && _isFirstDraw) || _isDrawing) return;
-        final newOffset = (_dragOffset.value + details.delta.dx).clamp(
-          -_dragMax,
-          _dragMax,
-        );
-        _dragOffset.value = newOffset;
-
-        if (_confirmResetVisible) {
-          // 已滑到左端重置钮触发确认：再反向滑完全程、盖住右端确认钮才真正重置
-          final reachedConfirm = newOffset >= _dragMax - 20;
-          _dragTarget = reachedConfirm ? 'confirm_reset' : null;
-          if (reachedConfirm != _hasSnapped) {
-            HapticFeedback.heavyImpact();
-            _hasSnapped = reachedConfirm;
-          }
-        } else {
-          final String? rawTarget = switch (newOffset) {
-            < -_dragThreshold => 'reset',
-            > _dragThreshold => 'swap',
-            _ => null,
-          };
-          final isTargetEnabled = switch (rawTarget) {
-            'reset' => isResetEnabled,
-            'swap' => isSwapEnabled,
-            _ => true,
-          };
-          final newTarget = isTargetEnabled ? rawTarget : null;
-          if (newTarget != null && !_hasSnapped) {
-            HapticFeedback.heavyImpact();
-            _hasSnapped = true;
-            if (newTarget == 'reset') {
-              // 换成红色确认态，再往左推到底才真正重置
-              _confirmResetVisible = true;
-            }
-          }
-          if (rawTarget != null && !isTargetEnabled && !_hasSnapped) {
-            HapticFeedback.heavyImpact();
-            HapticFeedback.heavyImpact();
-            unawaited(_shakeMainButton());
-            _hasSnapped = true;
-          }
-          if (rawTarget == null) _hasSnapped = false;
-          _dragTarget = newTarget;
-        }
-      },
-      onPanEnd: (_) {
-        if ((_handCards.isEmpty && _isFirstDraw) || _isDrawing) {
-          _isDragging = false;
-          _dragTarget = null;
-          unawaited(
-            _dragOffset.animateTo(
-              0,
-              duration: const Duration(milliseconds: 200),
-              curve: _fastOutSlowIn,
-            ),
-          );
-          return;
-        }
-        _isDragging = false;
-        final target = _dragTarget;
-        unawaited(
-          _dragOffset.animateTo(
-            0,
-            duration: const Duration(milliseconds: 200),
-            curve: _fastOutSlowIn,
-          ),
-        );
-        _dragTarget = null;
-        _hasSnapped = false;
-        _confirmResetVisible = false;
-        if (target == 'confirm_reset' && !_isDrawing) {
-          unawaited(_resetGame());
-        }
-        if (target == 'swap' && !_isDrawing && _redDeck.length >= 2) {
-          unawaited(_swapDecks());
-        }
-      },
-      onPanCancel: () {
-        _isDragging = false;
-        _dragTarget = null;
-        _confirmResetVisible = false;
-        unawaited(
-          _dragOffset.animateTo(
-            0,
-            duration: const Duration(milliseconds: 200),
-            curve: _fastOutSlowIn,
-          ),
-        );
-      },
-      child: Transform.translate(
-        offset: Offset(_dragOffset.value + _mainButtonShakeOffset.value, 0),
-        child: Listener(
-          onPointerDown: (_) {
-            if (_isPressing) return;
-            setState(() => _isPressing = true);
-          },
-          onPointerUp: (_) => setState(() => _isPressing = false),
-          onPointerCancel: (_) => setState(() => _isPressing = false),
-          child: SizedBox(
-            width: 68,
-            height: 68,
-          child: Stack(
-            alignment: Alignment.center,
-            children: [
-              // active ring
-              TweenAnimationBuilder<double>(
-                tween: Tween(end: ringAlpha),
-                duration: const Duration(milliseconds: 400),
-                curve: _fastOutSlowIn,
-                builder: (context, alpha, _) {
-                  return Opacity(
-                    opacity: alpha.clamp(0.0, 1.0),
-                      child: Transform.scale(
-                        scale: ringScale,
-                        child: _AnimatedProgress(
-                          target: activeProgressTarget,
-                          builder: (v) => _RingBox(
-                            size: 68,
-                            radius: 30,
-                            strokeWidth: 3.5,
-                            progress: v,
-                            color: activeRingColor,
-                            bgColor: theme.colorScheme.surfaceContainerHighest,
-                            child: const SizedBox.shrink(),
-                          ),
+        },
+        child: Transform.translate(
+          offset: Offset(_mainButtonShakeOffset.value, 0),
+          child: Listener(
+            onPointerDown: (_) {
+              if (_isPressing) return;
+              setState(() => _isPressing = true);
+            },
+            onPointerUp: (_) => setState(() => _isPressing = false),
+            onPointerCancel: (_) => setState(() => _isPressing = false),
+            child: AnimatedBuilder(
+              // 只监听拖动量：这里只剩按钮本体，它跟着手指纯平移
+              animation: _dragOffset,
+              builder: (context, _) {
+                // 拖动时按钮只是平移，尺寸恒定（原先按拖动距离拉长成胶囊的逻辑已移除）
+                final offsetX = _dragOffset.value.clamp(-_dragMax, _dragMax);
+                return SizedBox(
+                  width: _drawButtonOuterW,
+                  height: _drawRingSize,
+                  child: Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      // active ring（尺寸固定，始终居中）
+                      Positioned(
+                        left: (_drawButtonOuterW - _drawRingSize) / 2,
+                        top: 0,
+                        child: TweenAnimationBuilder<double>(
+                          tween: Tween(end: ringAlpha),
+                          duration: const Duration(milliseconds: 400),
+                          curve: _fastOutSlowIn,
+                          builder: (context, alpha, _) {
+                            return Opacity(
+                              opacity: alpha.clamp(0.0, 1.0),
+                              child: Transform.scale(
+                                scale: ringScale,
+                                child: _AnimatedProgress(
+                                  target: activeProgressTarget,
+                                  builder: (v) =>
+                                      M3ECircularWavyProgressIndicator(
+                                    value: v,
+                                    color: activeRingColor,
+                                    backgroundColor: theme
+                                        .colorScheme.surfaceContainerHighest,
+                                    size: _drawRingSize,
+                                    strokeWidth: _ringStrokeWidth,
+                                    trackStrokeWidth: _ringStrokeWidth,
+                                    gapSize: _ringGapSize,
+                                    wavelength: _ringWavelength,
+                                    waveSpeed: _ringWaveSpeed,
+                                  ),
+                                ),
+                              ),
+                            );
+                          },
                         ),
                       ),
-                  );
-                },
-              ),
-              // button（按住时微微放大，像是被压扁）
-              Transform.scale(
-                scale: _drawButtonScale.value,
-                child: AnimatedScale(
-                  scale: _isPressing ? 1.2 : 1.0,
-                  duration: const Duration(milliseconds: 120),
-                  curve: _fastOutSlowIn,
-                  child: Container(
-                    width: 56,
-                    height: 56,
-                    decoration: BoxDecoration(
-                      color: enabled
-                          ? theme.colorScheme.primary
-                          : theme.colorScheme.surfaceContainerHighest,
-                      shape: BoxShape.circle,
-                    ),
-                    alignment: Alignment.center,
-                    child: Stack(
-                      alignment: Alignment.center,
-                      children: [
-                        Icon(
-                          icon,
-                          size: 28,
-                          color: enabled
-                              ? theme.colorScheme.onPrimary
-                              : theme.colorScheme.onSurfaceVariant,
-                        ),
-                        IgnorePointer(
-                          child: AnimatedOpacity(
-                            opacity: _isPressing ? 0.3 : 0.0,
+                      // button（保持原尺寸，直接跟着手指平移）。
+                      // left 的基点是「盒子中央 - 半个按钮」，保证静止时按钮与进度环
+                      // 同心；偏移量直接加在 left 上，所以拖动就是纯平移、不产生形变。
+                      Positioned(
+                        left: (_drawButtonOuterW - _drawButtonSize) / 2 + offsetX,
+                        top: (_drawRingSize - _drawButtonSize) / 2,
+                        child: Transform.scale(
+                          scale: _drawButtonScale.value,
+                          child: AnimatedScale(
+                            scale: _isPressing ? 1.05 : 1.0,
                             duration: const Duration(milliseconds: 120),
                             curve: _fastOutSlowIn,
-                            child: const SizedBox(
-                              width: 56,
-                              height: 56,
-                              child: DecoratedBox(
-                                decoration: BoxDecoration(
-                                  shape: BoxShape.circle,
-                                  color: Colors.white,
+                            child: SizedBox(
+                              width: _drawButtonSize,
+                              height: _drawButtonSize,
+                              // 表面材质：液态玻璃（沿用包内默认外观，不接主题色）。
+                              //
+                              // 体育场形（两端半圆、中间直边）= 圆角半径恒等于高度的一半。
+                              // 尺寸固定 56x56，所以 radius 恒为 28，正好是正圆。
+                              // 包内另有 `GlassDefaults.capsuleRadius`(9999) 这个胶囊哨兵值，
+                              // 着色器会把它夹到 min(宽,高)/2，效果与这里的半高半径一致；
+                              // 这里用半高更直观且不依赖夹取。
+                              //
+                              // 只换表面：尺寸/位置/动画/手势/触感/回调全部是外层原逻辑。
+                              child: AdaptiveGlass(
+                                shape: const LiquidRoundedRectangle(
+                                  borderRadius: _drawButtonSize / 2,
+                                ),
+                                settings: const LiquidGlassSettings(),
+                                quality: GlassQuality.standard,
+                                child: Stack(
+                                  alignment: Alignment.center,
+                                  // 玻璃自带浅色模式投影，别让这层 Stack 裁掉它
+                                  clipBehavior: Clip.none,
+                                  children: [
+                                    // 发牌流程进行中：不只是"不可点"，用加载指示器明确表达
+                                    // 「有其它流程正在占用这个按钮」。注意 M3ELoadingIndicator
+                                    // 传了 shapes 后不能是 const（其断言访问 shapes.length）。
+                                    // 尺寸：组件内部会把图形内缩到约 0.79 倍，取 36 时实际
+                                    // 约 28px，与原来 28 的图标视觉体量相当（56 会显得过大）。
+                                    if (_isDrawing)
+                                      M3ELoadingIndicator(
+                                        shapes: const [
+                                          Shapes.softBurst,
+                                          Shapes.sunny,
+                                          Shapes.pill,
+                                        ],
+                                        constraints:
+                                            const BoxConstraints.tightFor(
+                                              width: 36,
+                                              height: 36,
+                                            ),
+                                        color: glassLabelColor,
+                                        semanticsLabel: 'Loading',
+                                        semanticsValue: 'In progress',
+                                      )
+                                    else
+                                      Icon(
+                                        icon,
+                                        size: 28,
+                                        color: enabled
+                                            ? glassLabelColor
+                                            : theme.colorScheme.onSurfaceVariant,
+                                      ),
+                                    IgnorePointer(
+                                      child: AnimatedOpacity(
+                                        opacity: _isPressing ? 0.3 : 0.0,
+                                        duration: const Duration(milliseconds: 120),
+                                        curve: _fastOutSlowIn,
+                                        child: SizedBox(
+                                          width: _drawButtonSize,
+                                          height: _drawButtonSize,
+                                          child: DecoratedBox(
+                                            decoration: BoxDecoration(
+                                              borderRadius:
+                                                  BorderRadius.circular(
+                                                _drawButtonSize / 2,
+                                              ),
+                                              color: Colors.white,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
                                 ),
                               ),
                             ),
                           ),
                         ),
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
-                ),
-              ),
-            ],
-          ),
+                );
+              },
+            ),
           ),
         ),
       ),
     );
+  }
+
+  /// 长按满 1 秒：展开轨道并进入可拖动状态。
+  /// 未开局（还没发牌）或正在发牌时不进入，姿势与原来的 onPanStart 守卫一致。
+  void _onRailHoldStart(LongPressStartDetails details) {
+    if ((_handCards.isEmpty && _isFirstDraw) || _isDrawing) {
+      _isDragging = false;
+      return;
+    }
+    _railExpanded = true;
+    setState(() {
+      _isDragging = true;
+      _hasSnapped = false;
+      _confirmResetVisible = false;
+    });
+  }
+
+  /// 长按期间手指移动：origin 是按下点，所以 offsetFromOrigin 就是本次拖动的总位移。
+  /// 判定的阈值/两段确认/触感与原先 onPanUpdate 完全一致，只是位移来源变了。
+  void _onRailDragUpdate(LongPressMoveUpdateDetails details) {
+    // 没进入展开态（未开局/发牌中），或指针还在 1 秒内——都不算拖动
+    if (!_railExpanded || (_handCards.isEmpty && _isFirstDraw) || _isDrawing) {
+      return;
+    }
+    final newOffset = details.offsetFromOrigin.dx.clamp(-_dragMax, _dragMax);
+    _dragOffset.value = newOffset;
+
+    if (_confirmResetVisible) {
+      // 已滑到左端重置钮触发确认：再反向滑完全程、盖住右端确认钮才真正重置
+      final reachedConfirm = newOffset >= _dragMax - 20;
+      _dragTarget = reachedConfirm ? 'confirm_reset' : null;
+      if (reachedConfirm != _hasSnapped) {
+        HapticFeedback.heavyImpact();
+        _hasSnapped = reachedConfirm;
+      }
+    } else {
+      final String? rawTarget = switch (newOffset) {
+        < -_dragThreshold => 'reset',
+        > _dragThreshold => 'swap',
+        _ => null,
+      };
+      final isTargetEnabled = switch (rawTarget) {
+        // 与原 onPanUpdate 一致：重置只在非发牌中可用，换堆还要求另一牌堆非空
+        'reset' => !_isDrawing,
+        'swap' => !_isDrawing && _redDeck.length >= 2 && _blueDeck.isNotEmpty,
+        _ => true,
+      };
+      final newTarget = isTargetEnabled ? rawTarget : null;
+      if (newTarget != null && !_hasSnapped) {
+        HapticFeedback.heavyImpact();
+        _hasSnapped = true;
+        if (newTarget == 'reset') {
+          // 换成红色确认态，再往左推到底才真正重置
+          _confirmResetVisible = true;
+        }
+      }
+      if (rawTarget != null && !isTargetEnabled && !_hasSnapped) {
+        HapticFeedback.heavyImpact();
+        HapticFeedback.heavyImpact();
+        unawaited(_shakeMainButton());
+        _hasSnapped = true;
+      }
+      if (rawTarget == null) _hasSnapped = false;
+      _dragTarget = newTarget;
+    }
+  }
+
+  /// 松手：先收起轨道（回默认不显示），再按落点执行 swap / reset。
+  /// 判定顺序与原来的 onPanEnd 一致：先取 _dragTarget 快照，再清状态。
+  void _onRailRelease(LongPressEndDetails details) {
+    final target = _dragTarget;
+    _endRailInteraction();
+    if (target == 'confirm_reset' && !_isDrawing) {
+      unawaited(_resetGame());
+    }
+    if (target == 'swap' && !_isDrawing && _redDeck.length >= 2) {
+      unawaited(_swapDecks());
+    }
+  }
+
+  /// 收起轨道 + 清空拖动状态，并把按钮回弹到原位（长按取消走同一条路径）
+  void _endRailInteraction() {
+    _dragOffset.animateTo(
+      0,
+      duration: const Duration(milliseconds: 200),
+      curve: _fastOutSlowIn,
+    );
+    _railExpanded = false;
+    _dragTarget = null;
+    _hasSnapped = false;
+    _confirmResetVisible = false;
+    if (_isDragging && mounted) {
+      setState(() => _isDragging = false);
+    } else {
+      _isDragging = false;
+    }
   }
 }
 
@@ -1572,6 +1732,44 @@ class _LightEffectPainter extends CustomPainter {
   @override
   bool shouldRepaint(_LightEffectPainter oldDelegate) =>
       oldDelegate.color != color || oldDelegate.pulse != pulse;
+}
+
+/// 左端钮：重置。重置确认态显示在右端换堆钮上。
+/// 做成独立 StatelessWidget（原来是带 theme 参数的 State 方法）是为了让它成为
+/// const 节点——轨道默认收起时它每一帧都挂在 Opacity(opacity: 0) 下，
+/// const 可以完全跳过重建。
+class _ResetCap extends StatelessWidget {
+  const _ResetCap();
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Container(
+      width: 48,
+      height: 48,
+      decoration: BoxDecoration(
+        color: cs.surfaceContainerHigh,
+        shape: BoxShape.circle,
+        border: Border.all(
+          color: cs.outlineVariant.withValues(alpha: 0.5),
+          width: 1,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: cs.shadow.withValues(alpha: 0.08),
+            blurRadius: 4,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      alignment: Alignment.center,
+      child: Icon(
+        Icons.refresh,
+        size: 22,
+        color: cs.onSurfaceVariant,
+      ),
+    );
+  }
 }
 
 /// 操作说明中的一行：图标 + 文字
@@ -1631,124 +1829,6 @@ class _AnimatedProgressState extends State<_AnimatedProgress> {
       builder: (context, value, _) => widget.builder(value),
     );
   }
-}
-
-/// 凹槽轨道背景：扁平圆角槽，仅靠底色与内层浅色区分
-class _GroovePainter extends CustomPainter {
-  const _GroovePainter(this.colorScheme);
-
-  final ColorScheme colorScheme;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final rrect = RRect.fromRectAndRadius(
-      Offset.zero & size,
-      Radius.circular(size.height / 2),
-    );
-    canvas.drawRRect(
-      rrect,
-      Paint()..color = colorScheme.surfaceContainerHighest,
-    );
-    canvas.drawRRect(
-      rrect,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1
-        ..color = colorScheme.outlineVariant.withValues(alpha: 0.6),
-    );
-  }
-
-  @override
-  bool shouldRepaint(_GroovePainter oldDelegate) =>
-      oldDelegate.colorScheme != colorScheme;
-}
-
-class _RingBox extends StatelessWidget {  const _RingBox({
-    required this.size,
-    required this.radius,
-    required this.strokeWidth,
-    required this.progress,
-    required this.color,
-    required this.bgColor,
-    required this.child,
-  });
-
-  final double size;
-  final double radius;
-  final double strokeWidth;
-  final double progress;
-  final Color color;
-  final Color bgColor;
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      width: size,
-      height: size,
-      child: CustomPaint(
-        painter: _RingPainter(
-          progress: progress,
-          color: color,
-          bgColor: bgColor,
-          radius: radius,
-          strokeWidth: strokeWidth,
-        ),
-        child: Center(child: child),
-      ),
-    );
-  }
-}
-
-class _RingPainter extends CustomPainter {
-  const _RingPainter({
-    required this.progress,
-    required this.color,
-    required this.bgColor,
-    required this.radius,
-    required this.strokeWidth,
-  });
-
-  final double progress;
-  final Color color;
-  final Color bgColor;
-  final double radius;
-  final double strokeWidth;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final c = size.width / 2;
-    final rect = Rect.fromCircle(center: Offset(c, c), radius: radius);
-    final bgPaint = Paint()
-      ..color = bgColor
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = strokeWidth
-      ..strokeCap = StrokeCap.round;
-    final fgPaint = Paint()
-      ..color = color
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = strokeWidth
-      ..strokeCap = StrokeCap.round;
-
-    canvas.drawArc(rect, -math.pi / 2, 2 * math.pi, false, bgPaint);
-    if (progress > 0) {
-      canvas.drawArc(
-        rect,
-        -math.pi / 2,
-        2 * math.pi * progress,
-        false,
-        fgPaint,
-      );
-    }
-  }
-
-  @override
-  bool shouldRepaint(_RingPainter oldDelegate) =>
-      oldDelegate.progress != progress ||
-      oldDelegate.color != color ||
-      oldDelegate.bgColor != bgColor ||
-      oldDelegate.radius != radius ||
-      oldDelegate.strokeWidth != strokeWidth;
 }
 
 class _WheelDragSurface extends StatefulWidget {

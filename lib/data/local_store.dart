@@ -64,11 +64,15 @@ class LocalStore {
   static const _kUiScale = 'ui_scale';
   static const _kDrawHelpShown = 'draw_help_shown';
   static const _kPendingHand = 'pending_hand';
+  static const _kClipboardAutoFill = 'clipboard_auto_fill';
+  static const _kClipboardWatch = 'clipboard_watch_enabled';
+  static const _kLibraryFirstCheck = 'library_first_check_done';
 
   static const _kThemeMode = 'theme_mode';
   static const _kUseMonet = 'theme_use_monet';
   static const _kSeedColor = 'theme_seed_color';
   static const _kSchemeVariant = 'theme_scheme_variant';
+  static const _kBottomBarStyle = 'bottom_bar_style';
 
   // ---- 主题设置持久化 ----
 
@@ -112,6 +116,20 @@ class LocalStore {
     await prefs.setString(_kSchemeVariant, name);
   }
 
+  /// 底栏外观：'m3e' 或 'liquid'。
+  ///
+  /// 返回 null 表示从未设置过（老用户升级上来就是这种情况），
+  /// 由 ThemeController 兜底成默认的 'm3e'，所以这里不需要默认值。
+  Future<String?> getBottomBarStyle() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_kBottomBarStyle);
+  }
+
+  Future<void> setBottomBarStyle(String style) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kBottomBarStyle, style);
+  }
+
   /// 是否已展示过发牌页操作说明（首次使用提示一次）
   Future<bool> isDrawHelpShown() async {
     final prefs = await SharedPreferences.getInstance();
@@ -145,6 +163,39 @@ class LocalStore {
     await prefs.setBool(_kDeckAuthEnabled, enabled);
   }
 
+  /// 是否已同意免责声明并开启「自动读取剪贴板」（默认关闭）
+  Future<bool> isClipboardAutoFillEnabled() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_kClipboardAutoFill) ?? false;
+  }
+
+  Future<void> setClipboardAutoFillEnabled(bool enabled) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kClipboardAutoFill, enabled);
+  }
+
+  /// 后台监听剪贴板（Android 前台服务）是否开启
+  Future<bool> isClipboardWatchEnabled() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_kClipboardWatch) ?? false;
+  }
+
+  Future<void> setClipboardWatchEnabled(bool enabled) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kClipboardWatch, enabled);
+  }
+
+  /// 首次激活时是否已经联网比对过牌库版本（只自动查一次）
+  Future<bool> isLibraryFirstCheckDone() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_kLibraryFirstCheck) ?? false;
+  }
+
+  Future<void> setLibraryFirstCheckDone() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kLibraryFirstCheck, true);
+  }
+
   Future<bool> isOnboardingDone() async {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getBool(_kOnboardingDone) ?? false;
@@ -153,6 +204,12 @@ class LocalStore {
   Future<void> setOnboardingDone() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_kOnboardingDone, true);
+  }
+
+  /// 清掉「已完成新手引导」标记（设置页的「重新进行新手引导」用）
+  Future<void> resetOnboarding() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_kOnboardingDone);
   }
 
   Future<String?> getPlayerName() async {

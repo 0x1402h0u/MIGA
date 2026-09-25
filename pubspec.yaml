@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.1.0-alpha1+1
+version: 2.0.0+2
 
 environment:
   sdk: ^3.12.2
@@ -65,6 +65,14 @@ dependencies:
   m3e_core: ^1.1.0
   material_ui: ^1.0.0
   m3e_design: ^0.2.1
+
+  # 可选的第二种底栏外观（iOS 26 液态玻璃，设置页开关控制）。
+  # 注意：用户给的 owner 记错了，包的正式仓库是 sdegenaar/liquid_glass_widgets，
+  # David1024Smith/liquid_glass_widgets 只是它 2026-02 的旧镜像（v0.3.0-dev.1）。
+  liquid_glass_widgets: ^1.6.2
+  # M3E 的弹簧动画引擎：m3e_core 的传递依赖，底部工具栏标签需要 SingleMotionController
+  motor: ^1.1.0
+  clipboard_watcher: ^0.3.0
 dev_dependencies:
   flutter_test:
     sdk: flutter

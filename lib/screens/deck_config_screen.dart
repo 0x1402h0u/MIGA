@@ -13,11 +13,13 @@ import 'package:m3e_core/m3e_core.dart';
 
 import '../data/card_pool.dart';
 import '../data/deck_pool.dart';
+import '../data/library_updater.dart';
 import '../data/local_store.dart';
 import '../models/card.dart';
 import '../utils/card_import.dart';
 import '../utils/deck_share.dart';
 import '../utils/log_collector.dart';
+import '../utils/m3e_toast.dart';
 import '../widgets/card_face.dart';
 import '../widgets/game_card.dart';
 
@@ -212,6 +214,27 @@ class DeckConfigScreenState extends State<DeckConfigScreen>
     });
   }
 
+  /// 把当前选中的牌另存为一个新卡组（确认牌组按钮的展开菜单项）。
+  ///
+  /// [DeckPool.instance.addDeck] 会让新卡组成为当前激活卡组，此时
+  /// `_selectedDeck` 仍是用户刚配好的那套牌，所以紧接着 saveChanges()
+  /// 就等于"把当前选择写进新卡组"。
+  Future<void> saveAsNewDeck() async {
+    if (!isValidDeckSize) {
+      await showInvalidDeckSizeDialog(context);
+      return;
+    }
+    final name = await _promptDeckName('保存为新卡组', '');
+    if (name == null || !mounted) return;
+    await DeckPool.instance.addDeck(name);
+    await saveChanges();
+    if (!mounted) return;
+    showMigaToast(
+      context,
+      '已保存为新卡组「$name」 (${_selectedDeck.length}/$_maxDeckSize)',
+    );
+  }
+
   Future<void> renameActiveDeck() async {
     final name = await _promptDeckName(
       '重命名卡组',
@@ -283,9 +306,7 @@ class DeckConfigScreenState extends State<DeckConfigScreen>
     LogCollector.instance.log('导出卡组（${_selectedDeck.length} 张）');
     await Clipboard.setData(ClipboardData(text: deckNamesText(_selectedDeck)));
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('卡组名称已复制到剪贴板')),
-    );
+    showMigaToast(context, '卡组名称已复制到剪贴板');
     await showDeckQrDialog(context, _selectedDeck);
   }
 
@@ -296,15 +317,11 @@ class DeckConfigScreenState extends State<DeckConfigScreen>
       if (!mounted || result.cancelled) return;
       final deck = result.deck;
       if (deck == null) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('未能识别图片中的二维码')));
+        showMigaToast(context, '未能识别图片中的二维码');
         return;
       }
       if (deck.isEmpty) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('二维码中没有有效牌组')));
+        showMigaToast(context, '二维码中没有有效牌组');
         return;
       }
       // 导入会清空当前卡组，需确认（当前卡组为空时无需确认）
@@ -348,14 +365,10 @@ class DeckConfigScreenState extends State<DeckConfigScreen>
           ..clear()
           ..addAll(imported);
       });
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('已导入牌组（${imported.length} 张）')));
+      showMigaToast(context, '已导入牌组（${imported.length} 张）');
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('导入失败：$e')));
+        showMigaToast(context, '导入失败：$e');
       }
     }
   }
@@ -594,11 +607,26 @@ class DeckConfigScreenState extends State<DeckConfigScreen>
                     onPressed: _canRedo ? _redo : null,
                   ),
                   const SizedBox(width: 8),
-                  // 确认牌组（自适应宽度，靠右）
+                  // 确认牌组（M3E 分裂按钮：左侧主操作=保存到当前卡组，
+                  // 右侧展开菜单里额外提供「保存为新卡组」）
                   Flexible(
                     child: Align(
                       alignment: Alignment.centerRight,
-                      child: M3EFilledButton.tonalIcon(
+                      child: M3ESplitButton<String>(
+                        style: M3EButtonStyle.filled,
+                        size: M3EButtonSize.md,
+                        shape: M3EButtonShape.round,
+                        leadingIcon: Icons.check_rounded,
+                        label:
+                            '确认牌组 (${_selectedDeck.length}/$_maxDeckSize)',
+                        leadingTooltip: '保存到当前卡组',
+                        trailingTooltip: '更多操作',
+                        items: const [
+                          M3ESplitButtonItem(
+                            value: 'save_as_new',
+                            child: Text('保存为新卡组'),
+                          ),
+                        ],
                         onPressed: () async {
                           if (!isValidDeckSize) {
                             showInvalidDeckSizeDialog(context);
@@ -606,20 +634,15 @@ class DeckConfigScreenState extends State<DeckConfigScreen>
                           }
                           await saveChanges();
                           if (!context.mounted) return;
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text(
-                                '已保存到「${DeckPool.instance.activeDeckName}」'
-                                ' (${_selectedDeck.length}/$_maxDeckSize)',
-                              ),
-                            ),
+                          showMigaToast(
+                            context,
+                            '已保存到「${DeckPool.instance.activeDeckName}」'
+                            ' (${_selectedDeck.length}/$_maxDeckSize)',
                           );
                         },
-                        icon: const Icon(Icons.check),
-                        label: Text(
-                          '确认牌组' ' (${_selectedDeck.length}/$_maxDeckSize)',
-                          style: theme.textTheme.titleMedium,
-                        ),
+                        onSelected: (val) async {
+                          if (val == 'save_as_new') await saveAsNewDeck();
+                        },
                       ),
                     ),
                   ),
@@ -679,74 +702,106 @@ class DeckConfigScreenState extends State<DeckConfigScreen>
               ],
             ),
           ),
-          if (!hasCards)
-            // 首次使用：空牌库，显示导入按钮
-            Expanded(
-              child: Center(
-                child: M3EFilledButton.icon(
-                  onPressed: () => importCardLibrary(context),
-                  icon: const Icon(Icons.file_download_outlined),
-                  label: const Text('导入卡牌JSON'),
-                ),
-              ),
-            )
-          else ...[
-            Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: TextField(
-                onChanged: (value) => setState(() => _searchQuery = value),
-                decoration: InputDecoration(
-                  hintText: '搜索卡牌',
-                  isDense: true,
-                  prefixIcon: const Icon(Icons.search, size: 20),
-                  filled: true,
-                  fillColor: theme.colorScheme.surface,
-                  contentPadding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 8,
-                  ),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(8),
-                    borderSide: BorderSide.none,
-                  ),
-                ),
-              ),
-            ),
-            Expanded(
-              child: filtered.isEmpty
-                  ? Center(
-                      child: Text(
-                        query.isEmpty ? '没有可添加的卡牌' : '未找到匹配的卡牌',
-                        style: theme.textTheme.bodyMedium,
-                        textAlign: TextAlign.center,
+          // 更新牌库时，牌库区正中显示加载指示器（更新由右上角菜单/首次激活触发）
+          ValueListenableBuilder<bool>(
+            valueListenable: LibraryUpdater.instance.updating,
+            builder: (context, updating, _) {
+              if (updating) {
+                return Expanded(
+                  child: Center(
+                    // shapes 非空时这个组件不能 const（内部 assert 会读 shapes.length）
+                    child: M3ELoadingIndicator(
+                      shapes: const [Shapes.softBurst, Shapes.sunny, Shapes.pill],
+                      constraints: const BoxConstraints.tightFor(
+                        width: 56.00,
+                        height: 56.00,
                       ),
-                    )
-                  : ListView.separated(
-                      itemCount: filtered.length,
-                      separatorBuilder: (_, _) => const SizedBox(height: 4),
-                      itemBuilder: (context, index) {
-                        final card = filtered[index];
-                        final collapsing = _collapsingCardIds.contains(card.id);
-                        // TODO: M3E Migration - 若 m3e_core 提供可定制
-                        // item 的 M3ECardList（带自定义 onTap 落点），再评估替换；
-                        // 当前条目含飞行动画/长按预览，与标准卡片列表语义不同。
-                        return _LibraryCardItem(
-                          key: ValueKey('lib-card-${card.id}'),
-                          card: card,
-                          collapsing: collapsing,
-                          // 主色填充 + 主色文字，与浅色牌库背景明显区分
-                          backgroundColor: theme.colorScheme.primary,
-                          foregroundColor: theme.colorScheme.onPrimary,
-                          onTap: (pos) =>
-                              _addCardWithFlight(context, card, pos),
-                          onPreviewStart: (pos) =>
-                              _showPreview(context, card, pos),
-                          onPreviewEnd: _hidePreview,
-                        );
-                      },
+                      semanticsLabel: 'Loading',
+                      semanticsValue: 'In progress',
                     ),
-            ),
-          ],
+                  ),
+                );
+              }
+              if (!hasCards) {
+                // 首次使用：空牌库，显示导入按钮
+                return Expanded(
+                  child: Center(
+                    child: M3EFilledButton.icon(
+                      onPressed: () => importCardLibrary(context),
+                      icon: const Icon(Icons.file_download_outlined),
+                      label: const Text('导入卡牌JSON'),
+                    ),
+                  ),
+                );
+              }
+              return Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: TextField(
+                        onChanged: (value) =>
+                            setState(() => _searchQuery = value),
+                        decoration: InputDecoration(
+                          hintText: '搜索卡牌',
+                          isDense: true,
+                          prefixIcon: const Icon(Icons.search, size: 20),
+                          filled: true,
+                          fillColor: theme.colorScheme.surface,
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 8,
+                          ),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(8),
+                            borderSide: BorderSide.none,
+                          ),
+                        ),
+                      ),
+                    ),
+                    Expanded(
+                      child: filtered.isEmpty
+                          ? Center(
+                              child: Text(
+                                query.isEmpty ? '没有可添加的卡牌' : '未找到匹配的卡牌',
+                                style: theme.textTheme.bodyMedium,
+                                textAlign: TextAlign.center,
+                              ),
+                            )
+                          : ListView.separated(
+                              itemCount: filtered.length,
+                              separatorBuilder: (_, _) =>
+                                  const SizedBox(height: 4),
+                              itemBuilder: (context, index) {
+                                final card = filtered[index];
+                                final collapsing = _collapsingCardIds.contains(
+                                  card.id,
+                                );
+                                // TODO: M3E Migration - 若 m3e_core 提供可定制
+                                // item 的 M3ECardList（带自定义 onTap 落点），再评估替换；
+                                // 当前条目含飞行动画/长按预览，与标准卡片列表语义不同。
+                                return _LibraryCardItem(
+                                  key: ValueKey('lib-card-${card.id}'),
+                                  card: card,
+                                  collapsing: collapsing,
+                                  // 主色填充 + 主色文字，与浅色牌库背景明显区分
+                                  backgroundColor: theme.colorScheme.primary,
+                                  foregroundColor: theme.colorScheme.onPrimary,
+                                  onTap: (pos) =>
+                                      _addCardWithFlight(context, card, pos),
+                                  onPreviewStart: (pos) =>
+                                      _showPreview(context, card, pos),
+                                  onPreviewEnd: _hidePreview,
+                                );
+                              },
+                            ),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
         ],
       ),
     );

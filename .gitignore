@@ -43,3 +43,8 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# release 签名：密钥库与口令绝不能进版本库
+/android/key.properties
+*.jks
+*.keystore

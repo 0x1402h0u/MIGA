@@ -44,6 +44,19 @@ class CardPool extends ChangeNotifier {
     return null;
   }
 
+  /// 按卡牌名查牌库（去掉首尾空格后精确匹配），查不到返回 null。
+  ///
+  /// 可视页用它把卡面补完整：剪贴板只给了名字和当场的攻击/血量，
+  /// 能力、费用这些静态信息跟着牌库走。
+  CardData? findByName(String name) {
+    final key = name.trim();
+    if (key.isEmpty) return null;
+    for (final c in _cards) {
+      if (c.name.trim() == key) return c;
+    }
+    return null;
+  }
+
   /// 蓝色副牌组大小：读取松鼠牌的 count 参数（动态，随 JSON 调整），
   /// 未设置时回退到默认 20。异常值（0/负数/超大）统一收敛到 20。
   int get blueDeckSize {

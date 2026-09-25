@@ -9,6 +9,7 @@ import 'package:m3e_core/m3e_core.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../data/player_profile.dart';
+import '../utils/m3e_toast.dart';
 
 /// 编辑个人信息页：修改名字、更换头像。
 class ProfileEditScreen extends StatefulWidget {
@@ -44,37 +45,31 @@ class _ProfileEditScreenState extends State<ProfileEditScreen> {
     await file.writeAsBytes(bytes, flush: true);
     await PlayerProfile.instance.setAvatarPath(file.path);
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('头像已更新')),
-      );
+      showMigaToast(context, '头像已更新');
     }
   }
 
   Future<void> _resetAvatar() async {
     await PlayerProfile.instance.setAvatarPath(null);
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('已恢复默认头像')),
-      );
+      showMigaToast(context, '已恢复默认头像');
     }
   }
 
   Future<void> _saveName() async {
     final name = _nameController.text.trim();
     if (name.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('名字不能为空')),
-      );
+      showMigaToast(context, '名字不能为空');
       return;
     }
     setState(() => _saving = true);
     await PlayerProfile.instance.setName(name);
     if (!mounted) return;
     setState(() => _saving = false);
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('名字已更新')),
-    );
+    // 先退出本页再弹提示：底部弹层与页面在同一 Navigator 上，
+    // 若先弹提示，随后的 pop 会把弹层弹掉而页面留在栈上。
     Navigator.of(context).pop();
+    showMigaToast(context, '名字已更新');
   }
 
   @override

@@ -5,17 +5,30 @@ import 'package:material_ui/material_ui.dart' as mui;
 
 import 'data/local_store.dart';
 
+/// 底栏外观的两个取值，与 local_store 里 `bottom_bar_style` 存的字符串一一对应。
+///
+/// 存字符串而不是 bool，是为了以后还能加第三种外观时不用再迁移存储格式。
+const String kBottomBarStyleM3E = 'm3e';
+const String kBottomBarStyleLiquid = 'liquid';
+
 class ThemeController extends ChangeNotifier {
   ThemeMode _themeMode = ThemeMode.light;
   bool _useMonet = false;
   Color _seedColor = Colors.deepPurple;
   DynamicSchemeVariant _schemeVariant = DynamicSchemeVariant.tonalSpot;
   double _uiScale = 1.0;
+  String _bottomBarStyle = kBottomBarStyleM3E;
 
   ThemeMode get themeMode => _themeMode;
   bool get useMonet => _useMonet;
   Color get seedColor => _seedColor;
   DynamicSchemeVariant get schemeVariant => _schemeVariant;
+
+  /// 底栏外观（默认 [kBottomBarStyleM3E]，保持历史观感）
+  String get bottomBarStyle => _bottomBarStyle;
+
+  /// 当前是否用液态玻璃底栏；设置页的开关行和底栏分支都读它
+  bool get useLiquidGlassBottomBar => _bottomBarStyle == kBottomBarStyleLiquid;
 
   /// 界面缩放系数（0.8 ~ 1.5，1.0 为默认）
   double get uiScale => _uiScale;
@@ -26,7 +39,7 @@ class ThemeController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 启动时从本地恢复主题设置（深色模式 / 莫奈 / 种子色 / 色彩风格）
+  /// 启动时从本地恢复主题设置（深色模式 / 莫奈 / 种子色 / 色彩风格 / 底栏外观）
   Future<void> loadTheme() async {
     final mode = await LocalStore.instance.getThemeMode();
     if (mode != null) {
@@ -52,6 +65,18 @@ class ThemeController extends ChangeNotifier {
         _ => DynamicSchemeVariant.tonalSpot,
       };
     }
+    // 底栏外观：没存过、或存了无法识别的值，都回落到 M3E，保证默认行为不变
+    final bottomBarStyle = await LocalStore.instance.getBottomBarStyle();
+    _bottomBarStyle = bottomBarStyle == kBottomBarStyleLiquid
+        ? kBottomBarStyleLiquid
+        : kBottomBarStyleM3E;
+    // 不变量：液态玻璃底栏必须配深色模式（浅色下选中指示器对比度仅约 1.25:1）。
+    // 存储被旧版本残留或手动改坏时在启动处强制校正，持久化一并改掉。
+    if (_bottomBarStyle == kBottomBarStyleLiquid &&
+        _themeMode != ThemeMode.dark) {
+      _themeMode = ThemeMode.dark;
+      LocalStore.instance.setThemeMode('dark');
+    }
     notifyListeners();
   }
 
@@ -64,11 +89,16 @@ class ThemeController extends ChangeNotifier {
   }
 
   void toggleThemeMode() {
-    _themeMode =
-        _themeMode == ThemeMode.light ? ThemeMode.dark : ThemeMode.light;
-    LocalStore.instance.setThemeMode(
-      _themeMode == ThemeMode.dark ? 'dark' : 'light',
+    setThemeMode(
+      _themeMode == ThemeMode.light ? ThemeMode.dark : ThemeMode.light,
     );
+  }
+
+  /// 切到指定主题模式并持久化（唯一写 themeMode 的入口，避免漏写 prefs）
+  void setThemeMode(ThemeMode mode) {
+    if (_themeMode == mode) return;
+    _themeMode = mode;
+    LocalStore.instance.setThemeMode(mode == ThemeMode.dark ? 'dark' : 'light');
     notifyListeners();
   }
 
@@ -90,6 +120,16 @@ class ThemeController extends ChangeNotifier {
     if (_schemeVariant == value) return;
     _schemeVariant = value;
     LocalStore.instance.setSchemeVariant(value.name);
+    notifyListeners();
+  }
+
+  /// 切换底栏外观（[kBottomBarStyleM3E] / [kBottomBarStyleLiquid]）。
+  ///
+  /// shell 整棵树挂在 themeController 的 ListenableBuilder 下，通知一发底栏就重建。
+  void setBottomBarStyle(String value) {
+    if (_bottomBarStyle == value) return;
+    _bottomBarStyle = value;
+    LocalStore.instance.setBottomBarStyle(value);
     notifyListeners();
   }
 }

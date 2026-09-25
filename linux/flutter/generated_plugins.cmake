@@ -3,6 +3,7 @@
 #
 
 list(APPEND FLUTTER_PLUGIN_LIST
+  clipboard_watcher
   desktop_webview_window
   dynamic_color
   file_selector_linux

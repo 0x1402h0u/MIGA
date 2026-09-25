@@ -19,6 +19,7 @@ import 'package:zxing2/zxing2.dart';
 import '../data/deck_pool.dart';
 import '../data/player_profile.dart';
 import '../models/card.dart';
+import '../utils/m3e_toast.dart';
 
 /// 二维码内容前缀：表示内容是 gzip+base64 压缩的牌组 JSON。
 const _kPayloadPrefix = 'MIGAZ:';
@@ -164,12 +165,11 @@ class _DeckQrDialogState extends State<_DeckQrDialog> {
       _saving = true;
       _error = null;
     });
-    final messenger = ScaffoldMessenger.of(context);
     try {
       final msg = await saveDeckQrToAlbum(widget.deck);
       if (!mounted) return;
       Navigator.of(context).pop();
-      messenger.showSnackBar(SnackBar(content: Text(msg)));
+      showMigaToast(context, msg);
     } catch (e) {
       if (!mounted) return;
       setState(() => _error = '保存失败：$e');
@@ -180,12 +180,9 @@ class _DeckQrDialogState extends State<_DeckQrDialog> {
 
   /// 复制排列好的卡组名称到剪贴板
   Future<void> _copyNames() async {
-    final messenger = ScaffoldMessenger.of(context);
     await Clipboard.setData(ClipboardData(text: deckNamesText(widget.deck)));
     if (!mounted) return;
-    messenger.showSnackBar(
-      const SnackBar(content: Text('卡组名称已复制到剪贴板')),
-    );
+    showMigaToast(context, '卡组名称已复制到剪贴板');
   }
 
   @override
